@@ -1,0 +1,127 @@
+{
+ "single_mkdb": [
+  {
+   "phase": "insert (write)",
+   "ops": 20000,
+   "errors": 0,
+   "ops_per_sec": 1006.2,
+   "p50_ms": 0.94,
+   "p95_ms": 1.35,
+   "p99_ms": 1.75,
+   "mean_ms": 0.99
+  },
+  {
+   "phase": "select by pk",
+   "ops": 20000,
+   "errors": 0,
+   "ops_per_sec": 24979.4,
+   "p50_ms": 0.03,
+   "p95_ms": 0.08,
+   "p99_ms": 0.12,
+   "mean_ms": 0.04
+  },
+  {
+   "phase": "select by non-key (full scan)",
+   "ops": 4000,
+   "errors": 0,
+   "ops_per_sec": 838.1,
+   "p50_ms": 1.12,
+   "p95_ms": 1.59,
+   "p99_ms": 2.22,
+   "mean_ms": 1.19
+  }
+ ],
+ "raft_cluster": [
+  {
+   "phase": "insert (write)",
+   "ops": 20000,
+   "errors": 0,
+   "ops_per_sec": 161.8,
+   "p50_ms": 48.75,
+   "p95_ms": 63.68,
+   "p99_ms": 71.88,
+   "mean_ms": 49.42
+  },
+  {
+   "phase": "select by pk",
+   "ops": 20000,
+   "errors": 0,
+   "ops_per_sec": 1401.3,
+   "p50_ms": 5.31,
+   "p95_ms": 9.34,
+   "p99_ms": 12.12,
+   "mean_ms": 5.7
+  },
+  {
+   "phase": "select by non-key (full scan)",
+   "ops": 4000,
+   "errors": 0,
+   "ops_per_sec": 693.0,
+   "p50_ms": 11.03,
+   "p95_ms": 14.78,
+   "p99_ms": 20.0,
+   "mean_ms": 11.53
+  }
+ ],
+ "index_effect": {
+  "applied": [
+   "CREATE INDEX idx_benchdcenga_name ON benchdcenga (name)",
+   "CREATE INDEX idx_benchdcengb_name ON benchdcengb (name)"
+  ],
+  "before": {
+   "phase": "scan, index se pehle [3/3]",
+   "ops": 12000,
+   "errors": 0,
+   "ops_per_sec": 661.6,
+   "p50_ms": 11.34,
+   "p95_ms": 17.79,
+   "p99_ms": 23.84,
+   "mean_ms": 12.09,
+   "rounds": [
+    691.4,
+    631.9,
+    661.6
+   ]
+  },
+  "after": {
+   "phase": "scan, index ke baad [2/3]",
+   "ops": 12000,
+   "errors": 0,
+   "ops_per_sec": 1272.7,
+   "p50_ms": 5.94,
+   "p95_ms": 9.88,
+   "p99_ms": 13.15,
+   "mean_ms": 6.28,
+   "rounds": [
+    1331.6,
+    1272.7,
+    1186.4
+   ]
+  },
+  "impact": [
+   {
+    "id": "263b660e8d",
+    "table": "benchdcenga",
+    "columns": [
+     "name"
+    ],
+    "significant": null,
+    "reason": "data kam hai (control=0, treatment=9999, chahiye >= 30)",
+    "n_control": 0,
+    "n_treatment": 9999
+   },
+   {
+    "id": "a2dc7a885f",
+    "table": "benchdcengb",
+    "columns": [
+     "name"
+    ],
+    "significant": null,
+    "reason": "data kam hai (control=0, treatment=10001, chahiye >= 30)",
+    "n_control": 0,
+    "n_treatment": 10001
+   }
+  ],
+  "speedup_ops_per_sec": 1.92
+ }
+}
