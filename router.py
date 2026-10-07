@@ -1,4 +1,4 @@
-﻿import json
+import json
 import os
 import time
 import urllib.request
@@ -6,15 +6,17 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
 from abtest.experiment import ExperimentManager
-from distributed.config import GROUPS
+from distributed.config import GROUPS, SPARE
+from distributed.rebalance import rebalance
 from distributed.ring import Ring
 from optimizer.service import OptimizerService
 from workload.recorder import WorkloadRecorder
 
 ring = Ring(list(GROUPS))
 recorder = WorkloadRecorder()
-optimizer = OptimizerService(recorder, group_of=ring.get)
+optimizer = OptimizerService(recorder, group_of=lambda t: ring.get(t))
 experiments = ExperimentManager()
+rebalancing = False
 
 
 def call(port, path, body=None):
@@ -32,6 +34,31 @@ def leader_port(group):
         except OSError:
             pass
     return None
+
+
+def add_group(name):
+    """Naya group ring me jodo: data copy karo, phir ring badlo. Beech me writes band."""
+    global ring, rebalancing
+    if name in GROUPS or name not in SPARE:
+        return {"error": f"{name} SPARE me nahi hai ya pehle se active hai"}
+    rebalancing = True
+    time.sleep(0.5)                                   # in-flight writes settle ho jaayein
+    GROUPS[name] = SPARE[name]
+    try:
+        logs = {g: call(leader_port(g), "/log")["cmds"] for g in GROUPS if g != name}
+        if leader_port(name) is None:
+            raise OSError(f"{name} ke nodes chalu nahi hain")
+        new = Ring(list(GROUPS))
+        out = rebalance(logs, new, lambda g, c: call(leader_port(g), "/client", {"cmd": c}) is True)
+        if "error" in out:
+            raise OSError(out["error"])
+        ring = new
+        return out
+    except OSError as e:
+        del GROUPS[name]
+        return {"error": str(e)}
+    finally:
+        rebalancing = False
 
 
 def sql_write(table, sql):
@@ -88,6 +115,10 @@ class Router(BaseHTTPRequestHandler):
         self._send(out)
 
     def route(self, path, b):
+        if rebalancing and path in ("/sql", "/set", "/del"):
+            return {"error": "rebalance chal raha hai, thodi der baad try karo"}
+        if path == "/rebalance/add":
+            return add_group(b.get("group", ""))
         # ---- workload / optimizer / A-B (naye) ----
         if path == "/stats":
             return {"entries": len(recorder.snapshot()), "tables": recorder.schema.tables and {
@@ -132,4 +163,3 @@ class Router(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     ThreadingHTTPServer(("127.0.0.1", int(os.environ.get("ROUTER_PORT", "8000"))), Router).serve_forever()
-

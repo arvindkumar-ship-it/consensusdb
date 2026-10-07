@@ -1,11 +1,9 @@
-﻿"""Router (port 8000) pe load daal ke latency/throughput naapna.
-
-Chalao:   python -m bench.bench --tables 4 --rows 500 --threads 8
-Agar mkdb ka SQL syntax alag hai to neeche DDL/INS/SEL templates badal do.
-"""
+"""Load test. Router pe: python -m bench.bench   |   Poora comparison: python -m bench.compare"""
 import argparse
 import json
+import random
 import statistics
+import string
 import threading
 import time
 import urllib.request
@@ -16,10 +14,12 @@ SEL = "SELECT * FROM {t} WHERE id = {i}"
 SEL_SCAN = "SELECT * FROM {t} WHERE name = 'user{i}'"
 
 
-def post(url, path, body):
-    req = urllib.request.Request(url + path, json.dumps(body).encode(), {"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=10) as r:
-        return json.loads(r.read())
+def router_send(url):
+    def send(path, body):
+        req = urllib.request.Request(url + path, json.dumps(body).encode(), {"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return json.loads(r.read())
+    return send
 
 
 def pct(v, p):
@@ -27,7 +27,7 @@ def pct(v, p):
     return v[min(len(v) - 1, int(len(v) * p / 100))] if v else 0.0
 
 
-def run_phase(name, jobs, threads, url):
+def run_phase(name, jobs, threads, send):
     lat, errs, lock = [], [0], threading.Lock()
     it = iter(jobs)
 
@@ -37,11 +37,10 @@ def run_phase(name, jobs, threads, url):
                 job = next(it, None)
             if job is None:
                 return
-            path, body = job
             t0 = time.perf_counter()
             try:
-                out = post(url, path, body)
-                bad = "error" in out
+                out = send(*job)
+                bad = "error" in out or out.get("ok") is False
             except Exception:
                 bad = True
             ms = (time.perf_counter() - t0) * 1000
@@ -61,6 +60,27 @@ def run_phase(name, jobs, threads, url):
     return res
 
 
+def make_jobs(tables, rows):
+    sql = lambda path, t, tpl, i=0: (path, {"table": t, "sql": tpl.format(t=t, i=i)})
+    return {"ddl": [sql("/sql", t, DDL) for t in tables],
+            "ins": [sql("/sql", t, INS, i) for t in tables for i in range(rows)],
+            "sel": [sql("/query", t, SEL, i) for t in tables for i in range(rows)],
+            "scan": [sql("/query", t, SEL_SCAN, i) for t in tables for i in range(0, rows, 5)]}
+
+
+def new_tables(n):
+    tag = "".join(random.choices(string.ascii_lowercase, k=5))
+    return [f"bench{tag}{chr(97 + k)}" for k in range(n)]
+
+
+def run_all(send, tables, rows, threads):
+    j = make_jobs(tables, rows)
+    run_phase("create", j["ddl"], 1, send)
+    return [run_phase("insert (write)", j["ins"], threads, send),
+            run_phase("select by pk", j["sel"], threads, send),
+            run_phase("select by non-key (full scan)", j["scan"], threads, send)]
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--url", default="http://127.0.0.1:8000")
@@ -68,22 +88,9 @@ def main():
     ap.add_argument("--rows", type=int, default=500)
     ap.add_argument("--threads", type=int, default=8)
     a = ap.parse_args()
-    import random, string
-    tag = "".join(random.choices(string.ascii_lowercase, k=5))
-    tables = [f"bench{tag}{chr(97 + k)}" for k in range(a.tables)]
-    for t in tables:
-        post(a.url, "/sql", {"table": t, "sql": DDL.format(t=t)})
-    ins = [("/sql", {"table": t, "sql": INS.format(t=t, i=i)}) for t in tables for i in range(a.rows)]
-    sel = [("/query", {"table": t, "sql": SEL.format(t=t, i=i)}) for t in tables for i in range(a.rows)]
-    scan = [("/query", {"table": t, "sql": SEL_SCAN.format(t=t, i=i)}) for t in tables for i in range(0, a.rows, 5)]
-    out = [run_phase("insert (raft write)", ins, a.threads, a.url),
-           run_phase("select by pk (point lookup)", sel, a.threads, a.url),
-           run_phase("select by non-key (full scan)", scan, a.threads, a.url)]
-    with open("bench_results.json", "w") as f:
-        json.dump(out, f, indent=1)
-    print("saved bench_results.json")
+    out = run_all(router_send(a.url), new_tables(a.tables), a.rows, a.threads)
+    json.dump(out, open("bench_results.json", "w"), indent=1)
 
 
 if __name__ == "__main__":
     main()
-

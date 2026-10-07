@@ -1,12 +1,12 @@
-﻿import os
+import os
 import sys
-from distributed.config import GROUPS
+from distributed.config import GROUPS, SPARE
 from distributed.kv import KV
 from distributed.raft_node import RaftNode
 from distributed.rpc import RemotePeer, serve
 
 me = sys.argv[1]                                  # e.g. g1n1
-members = next((m for m in GROUPS.values() if me in m), None)
+members = next((m for m in {**GROUPS, **SPARE}.values() if me in m), None)
 if members is None:
     valid = sorted(n for g in GROUPS.values() for n in g)
     raise SystemExit(f"unknown node '{me}'. valid: {valid}")

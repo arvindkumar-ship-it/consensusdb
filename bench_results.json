@@ -1,32 +1,89 @@
-[
- {
-  "phase": "insert (raft write)",
-  "ops": 400,
-  "errors": 0,
-  "ops_per_sec": 11.8,
-  "p50_ms": 331.16,
-  "p95_ms": 490.23,
-  "p99_ms": 566.31,
-  "mean_ms": 338.1
- },
- {
-  "phase": "select by pk (point lookup)",
-  "ops": 400,
-  "errors": 0,
-  "ops_per_sec": 136.6,
-  "p50_ms": 21.8,
-  "p95_ms": 90.02,
-  "p99_ms": 100.61,
-  "mean_ms": 29.16
- },
- {
-  "phase": "select by non-key (full scan)",
-  "ops": 80,
-  "errors": 0,
-  "ops_per_sec": 114.7,
-  "p50_ms": 29.95,
-  "p95_ms": 93.87,
-  "p99_ms": 108.46,
-  "mean_ms": 34.1
+{
+ "single_mkdb": [
+  {
+   "phase": "insert (write)",
+   "ops": 400,
+   "errors": 0,
+   "ops_per_sec": 1130.1,
+   "p50_ms": 0.84,
+   "p95_ms": 1.13,
+   "p99_ms": 1.59,
+   "mean_ms": 0.88
+  },
+  {
+   "phase": "select by pk",
+   "ops": 400,
+   "errors": 0,
+   "ops_per_sec": 27563.4,
+   "p50_ms": 0.03,
+   "p95_ms": 0.04,
+   "p99_ms": 0.07,
+   "mean_ms": 0.03
+  },
+  {
+   "phase": "select by non-key (full scan)",
+   "ops": 80,
+   "errors": 0,
+   "ops_per_sec": 17358.5,
+   "p50_ms": 0.05,
+   "p95_ms": 0.08,
+   "p99_ms": 0.1,
+   "mean_ms": 0.05
+  }
+ ],
+ "raft_cluster": [
+  {
+   "phase": "insert (write)",
+   "ops": 400,
+   "errors": 0,
+   "ops_per_sec": 12.6,
+   "p50_ms": 621.79,
+   "p95_ms": 890.06,
+   "p99_ms": 1093.98,
+   "mean_ms": 626.49
+  },
+  {
+   "phase": "select by pk",
+   "ops": 400,
+   "errors": 0,
+   "ops_per_sec": 221.4,
+   "p50_ms": 26.64,
+   "p95_ms": 86.03,
+   "p99_ms": 104.02,
+   "mean_ms": 32.14
+  },
+  {
+   "phase": "select by non-key (full scan)",
+   "ops": 80,
+   "errors": 0,
+   "ops_per_sec": 232.6,
+   "p50_ms": 21.04,
+   "p95_ms": 93.64,
+   "p99_ms": 112.85,
+   "mean_ms": 29.01
+  }
+ ],
+ "index_effect": {
+  "applied": [],
+  "before": {
+   "phase": "scan, index se pehle",
+   "ops": 80,
+   "errors": 0,
+   "ops_per_sec": 224.6,
+   "p50_ms": 28.21,
+   "p95_ms": 104.09,
+   "p99_ms": 110.43,
+   "mean_ms": 33.02
+  },
+  "after": {
+   "phase": "scan, index ke baad",
+   "ops": 80,
+   "errors": 0,
+   "ops_per_sec": 247.1,
+   "p50_ms": 20.91,
+   "p95_ms": 96.19,
+   "p99_ms": 108.04,
+   "mean_ms": 29.99
+  }
  }
-]
+}

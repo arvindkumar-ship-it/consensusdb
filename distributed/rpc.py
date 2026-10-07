@@ -99,6 +99,8 @@ def serve(node, port):
                             out = {"result": node.sm.query(body["sql"])}
                         except Exception as e:      # SqlError ya KV mode (query nahi hai)
                             out = {"error": str(e)}
+                    elif self.path == "/log":
+                        out = {"cmds": [e.command for e in node.log[1:node.commit_index + 1] if e.command != "NOOP"]}
                     elif self.path == "/get":
                         out = {"value": node.sm.data.get(body["key"])}
                     else:
