@@ -1,4 +1,4 @@
-import json, threading, time, urllib.request
+import json, os, threading, time, urllib.request
 from dataclasses import asdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from .raft_node import LogEntry
@@ -30,7 +30,30 @@ class RemotePeer:
         return tuple(self._post("/append", {"args": args}))
 
 
+def save(node):
+    path = f"data/{node.node_id}.json"
+    os.makedirs("data", exist_ok=True)
+    d = {"term": node.current_term, "voted_for": node.voted_for,
+         "log": [asdict(e) for e in node.log]}
+    with open(path + ".tmp", "w") as f:
+        json.dump(d, f)
+        f.flush()
+        os.fsync(f.fileno())          # disk pe pakka likh do
+    os.replace(path + ".tmp", path)   # atomic swap, aadhi file kabhi nahi bachegi
+
+
+def load(node):
+    try:
+        with open(f"data/{node.node_id}.json") as f:
+            d = json.load(f)
+    except FileNotFoundError:
+        return
+    node.current_term, node.voted_for = d["term"], d["voted_for"]
+    node.log = [LogEntry(**e) for e in d["log"]]
+
+
 def serve(node, port):
+    load(node)
     lock = threading.Lock()           # tick thread aur HTTP threads ek saath node na chhedein
 
     class Handler(BaseHTTPRequestHandler):
@@ -43,12 +66,15 @@ def serve(node, port):
                 with lock:
                     if self.path == "/vote":
                         out = node.handle_request_vote(*body["args"])
+                        save(node)        # reply se pehle disk pe
                     elif self.path == "/append":
                         a = body["args"]
                         a[4] = [LogEntry(**e) for e in a[4]]
                         out = node.handle_append_entries(*a)
+                        save(node)
                     elif self.path == "/client":
                         out = node.client_request(body["cmd"])
+                        save(node)
                     else:
                         out = {"id": node.node_id, "state": node.state.name,
                                "term": node.current_term, "log": len(node.log) - 1,
@@ -68,6 +94,7 @@ def serve(node, port):
             with lock:
                 try:
                     node.tick()
+                    save(node)        # election/heartbeat se term ya log badla ho
                 except OSError:       # RPC beech mein fail hua, agla tick retry karega
                     pass
 

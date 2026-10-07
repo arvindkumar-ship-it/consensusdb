@@ -4,8 +4,8 @@ def test_replicate(make_cluster):
     n = make_cluster()
     n["n1"].start_election()
     n["n1"].client_request("SET a 1")
-    assert all(x.log[1].command == "SET a 1" for x in n.values())
-    assert n["n1"].commit_index == 1
+    assert all(x.log[2].command == "SET a 1" for x in n.values())
+    assert n["n1"].commit_index == 2
 
 def test_stale_log_cannot_win(make_cluster):
     n = make_cluster()

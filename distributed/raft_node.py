@@ -71,6 +71,7 @@ class RaftNode:
             self.state = Nodestate.LEADER
             self.next_index = {p: len(self.log) for p in self.peer_ids}
             self.match_index = {p: 0 for p in self.peer_ids}
+            self.log.append(LogEntry(self.current_term, "NOOP"))  # purani entries commit karwane ke liye
 
     def handle_append_entries(self, term, leader_id, prev_idx, prev_term, entries, leader_commit):
         if term < self.current_term:

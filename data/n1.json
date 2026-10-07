@@ -1,0 +1,1 @@
+{"term": 15, "voted_for": "n1", "log": [{"term": 0, "command": ""}, {"term": 7, "command": "SET a 1"}, {"term": 7, "command": "SET b 2"}]}
