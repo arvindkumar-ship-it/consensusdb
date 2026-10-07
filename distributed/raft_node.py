@@ -11,8 +11,8 @@ class LogEntry:
 
 
 def _new_timeout() -> int:
-    # ticks mein (1 tick = 0.1s in rpc.py ticker) -> 1.5s .. 3.0s
-    return random.randint(15, 30)
+    # ticks mein (1 tick = 0.1s in rpc.py ticker) -> 0.5s .. 1.0s
+    return random.randint(5, 10)
 
 
 class RaftNode:
@@ -105,10 +105,17 @@ class RaftNode:
             self.commit_index = min(leader_commit, prev_idx + len(entries))
         return self.current_term, True
 
-    def client_request(self, cmd):
+    def client_append(self, cmd):
+        """Log me append, replicate NAHI. Entry ka index return, leader nahi to None.
+        Group commit ke liye: kai appends ke baad ek replicate()."""
         if self.state != Nodestate.LEADER:
-            return False
+            return None
         self.log.append(LogEntry(self.current_term, cmd))
+        return len(self.log) - 1
+
+    def client_request(self, cmd):
+        if self.client_append(cmd) is None:
+            return False
         self.replicate()
         return True
 
