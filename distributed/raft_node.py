@@ -9,6 +9,11 @@ class LogEntry:
     command: str
 
 
+def _new_timeout() -> int:
+    # ticks mein (1 tick = 0.1s in rpc.py ticker) -> 1.5s .. 3.0s
+    return random.randint(15, 30)
+
+
 class RaftNode:
     def __init__(self, node_id: str, peer_ids: list[str]):
         self.node_id = node_id
@@ -21,12 +26,14 @@ class RaftNode:
         self.votes: set[str] = set()
         self.log = [LogEntry(0, "")]   # index 0 sentinel
         self.commit_index = 0
+        self.last_applied = 0          # state machine pe kahan tak apply hua
+        self.sm = None                 # state machine, koi bhi object jisme apply(cmd) ho
         self.next_index = {}
         self.match_index = {}
 
-        self.alive = True              # False = node crashed
-        self.elapsed = 0               # last heartbeat se kitne tick guzre
-        self.timeout = random.randint(5, 10)
+        self.alive = True
+        self.elapsed = 0
+        self.timeout = _new_timeout()
 
     def connect_peers(self, peers: dict[str, "RaftNode"]):
         self.peers = peers
@@ -60,8 +67,11 @@ class RaftNode:
         for pid in self.peer_ids:
             if not self.peers[pid].alive:
                 continue
-            term, granted = self.peers[pid].handle_request_vote(
-                self.current_term, self.node_id, len(self.log) - 1, self.log[-1].term)
+            try:
+                term, granted = self.peers[pid].handle_request_vote(
+                    self.current_term, self.node_id, len(self.log) - 1, self.log[-1].term)
+            except OSError:
+                continue
             if term > self.current_term:
                 self._step_down(term)
                 return
@@ -71,7 +81,7 @@ class RaftNode:
             self.state = Nodestate.LEADER
             self.next_index = {p: len(self.log) for p in self.peer_ids}
             self.match_index = {p: 0 for p in self.peer_ids}
-            self.log.append(LogEntry(self.current_term, "NOOP"))  # purani entries commit karwane ke liye
+            self.log.append(LogEntry(self.current_term, "NOOP"))
 
     def handle_append_entries(self, term, leader_id, prev_idx, prev_term, entries, leader_commit):
         if term < self.current_term:
@@ -106,9 +116,12 @@ class RaftNode:
             while self.state == Nodestate.LEADER:
                 prev = self.next_index[pid] - 1
                 entries = self.log[prev + 1:]
-                term, ok = self.peers[pid].handle_append_entries(
-                    self.current_term, self.node_id, prev, self.log[prev].term,
-                    entries, self.commit_index)
+                try:
+                    term, ok = self.peers[pid].handle_append_entries(
+                        self.current_term, self.node_id, prev, self.log[prev].term,
+                        entries, self.commit_index)
+                except OSError:
+                    break          # ye peer skip, baaki peers ko heartbeat jaane do
                 if term > self.current_term:
                     self._step_down(term)
                     return
@@ -123,14 +136,22 @@ class RaftNode:
                 self.commit_index = n
                 break
 
+    def apply_committed(self):
+        """Commit ho chuki entries ko order mein state machine pe chalao."""
+        while self.last_applied < self.commit_index:
+            self.last_applied += 1
+            cmd = self.log[self.last_applied].command
+            if self.sm and cmd != "NOOP":
+                self.sm.apply(cmd)
+
     def tick(self):
         if not self.alive:
             return
         if self.state == Nodestate.LEADER:
-            self.replicate()           # heartbeat
+            self.replicate()
             return
         self.elapsed += 1
         if self.elapsed >= self.timeout:
             self.elapsed = 0
-            self.timeout = random.randint(5, 10)
+            self.timeout = _new_timeout()
             self.start_election()

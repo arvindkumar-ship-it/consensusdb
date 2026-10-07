@@ -5,21 +5,20 @@ from .raft_node import LogEntry
 
 
 class RemotePeer:
-    """Dusre process ke node ka proxy; methods RaftNode wale hi hain."""
     def __init__(self, url):
         self.url = url
 
     def _post(self, path, body):
         req = urllib.request.Request(self.url + path, json.dumps(body).encode(),
                                      {"Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=0.3) as r:
+        with urllib.request.urlopen(req, timeout=0.5) as r:
             return json.loads(r.read())
 
     @property
     def alive(self):
         try:
             return self._post("/ping", {})["alive"]
-        except OSError:               # connection refused / timeout = node down
+        except OSError:
             return False
 
     def handle_request_vote(self, *args):
@@ -38,8 +37,14 @@ def save(node):
     with open(path + ".tmp", "w") as f:
         json.dump(d, f)
         f.flush()
-        os.fsync(f.fileno())          # disk pe pakka likh do
-    os.replace(path + ".tmp", path)   # atomic swap, aadhi file kabhi nahi bachegi
+        os.fsync(f.fileno())
+    for _ in range(50):               # Windows pe file locked ho to retry
+        try:
+            os.replace(path + ".tmp", path)
+            return
+        except PermissionError:
+            time.sleep(0.01)
+    os.replace(path + ".tmp", path)
 
 
 def load(node):
@@ -52,50 +57,66 @@ def load(node):
     node.log = [LogEntry(**e) for e in d["log"]]
 
 
+_last = {}                            # node_id -> last saved fingerprint
+
+
+def done(node):
+    # sirf tab fsync jab persistent state (term, voted_for, log) badli ho
+    key = (node.current_term, node.voted_for, len(node.log),
+           node.log[-1].term, node.log[-1].command)
+    if _last.get(node.node_id) != key:
+        save(node)
+        _last[node.node_id] = key
+    node.apply_committed()            # pehle disk, phir state machine
+
+
 def serve(node, port):
     load(node)
-    lock = threading.Lock()           # tick thread aur HTTP threads ek saath node na chhedein
+    lock = threading.Lock()
 
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self):
             n = int(self.headers.get("Content-Length", 0))
             body = json.loads(self.rfile.read(n) or b"{}")
-            if self.path == "/ping":      # lock-free, warna busy node dead dikhega
+            if self.path == "/ping":
                 out = {"alive": node.alive}
             else:
                 with lock:
                     if self.path == "/vote":
                         out = node.handle_request_vote(*body["args"])
-                        save(node)        # reply se pehle disk pe
+                        done(node)
                     elif self.path == "/append":
                         a = body["args"]
                         a[4] = [LogEntry(**e) for e in a[4]]
                         out = node.handle_append_entries(*a)
-                        save(node)
+                        done(node)
                     elif self.path == "/client":
-                        out = node.client_request(body["cmd"])
-                        save(node)
+                        ok = node.client_request(body["cmd"])
+                        out = ok and node.commit_index == len(node.log) - 1  # True = commit bhi hua
+                        done(node)
+                    elif self.path == "/get":
+                        out = {"value": node.sm.data.get(body["key"])}
                     else:
                         out = {"id": node.node_id, "state": node.state.name,
                                "term": node.current_term, "log": len(node.log) - 1,
-                               "commit": node.commit_index}
+                               "commit": node.commit_index, "applied": node.last_applied}
             data = json.dumps(out).encode()
             self.send_response(200)
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
             self.wfile.write(data)
 
-        def log_message(self, *a):    # console spam band
+        def log_message(self, *a):
             pass
 
     def ticker():
         while True:
-            time.sleep(0.1)           # 1 tick = 100ms, timeout = 0.5-1s
+            time.sleep(0.1)
             with lock:
                 try:
                     node.tick()
-                    save(node)        # election/heartbeat se term ya log badla ho
-                except OSError:       # RPC beech mein fail hua, agla tick retry karega
+                    done(node)
+                except OSError:
                     pass
 
     threading.Thread(target=ticker, daemon=True).start()
