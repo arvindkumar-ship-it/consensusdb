@@ -1,6 +1,11 @@
-﻿__pycache__/
+__pycache__/
 *.pyc
 .venv/
 .venv313/
 .pytest_cache/
 data/
+*.log
+*.bak
+*.patch
+*.mkdb
+*.mkdb-journal
