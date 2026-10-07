@@ -20,4 +20,8 @@ def suggest(features: dict, min_queries: int = 20, scan_threshold: float = 30.0,
             a, b = j["tables"]
             notes.append(f"JOIN {a} x {b}: tables alag shard-groups me hain, router isko execute nahi kar sakta. "
                          f"Dono tables ko ek group me rakho ya app-side join karo.")
+    for h in features.get("hot_keys", []):
+        if h["share_pct"] >= 20:
+            notes.append(f"Hot key: {h['table']}.{h['column']} = {h['value']} pe {h['share_pct']}% lookups ({h['count']} queries). "
+                         f"Index se ye theek nahi hoga, cache ya read replica soch.")
     return {"indexes": indexes, "notes": notes}

@@ -1,0 +1,11 @@
+.git
+.venv*
+__pycache__
+*.pyc
+data
+data_solo.mkdb*
+*.patch
+*.bak
+srv.log
+bench_results.json
+tests

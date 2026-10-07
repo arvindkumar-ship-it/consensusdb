@@ -1,0 +1,23 @@
+services:
+  consensusdb:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      additional_contexts:
+        mkdb: ${MKDB_SRC:-./docker/mkdb-empty}
+    init: true
+    ports:
+      - "${HOST_PORT:-8000}:8000"
+    environment:
+      USE_MKDB: ${USE_MKDB:-0}
+    volumes:
+      - cdb-data:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:8100/stats', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+volumes:
+  cdb-data:

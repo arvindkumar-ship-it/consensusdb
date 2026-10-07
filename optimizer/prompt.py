@@ -12,6 +12,8 @@ Analyse the workload summary and suggest ONLY indexes. Do not invent tables or c
 - Prefer columns with high share in "where_columns" on tables with high "full_scan_pct".
 - Be careful with tables with high "write_pct": every index slows writes.
 - If a join in "frequent_joins" has "cross_shard": true, add a note (not an index) saying it cannot work across shards.
+- "hot_keys" lists single (table, column, value) hotspots. An index does NOT fix a hot key; if one has a big
+  "share_pct", add a note (caching or read replicas), not an index.
 - Return AT MOST 5 indexes. Return JSON only, no markdown, exactly this shape:
 
 {{"indexes": [{{"table": "users", "columns": ["email"], "type": "btree", "reason": "..."}}],

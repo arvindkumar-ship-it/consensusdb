@@ -1,6 +1,8 @@
 """Raw query log -> chhota structured summary (LLM ko poora log nahi dena, tokens aur paisa dono jalte hain)."""
 from collections import Counter, defaultdict
 
+from workload import hotkeys
+
 
 def percentile(values, p):
     if not values:
@@ -67,4 +69,5 @@ def extract(entries, schema=None, group_of=None, slow_n: int = 5) -> dict:
         cross = bool(group_of) and group_of(a) != group_of(b)
         top_joins.append({"tables": [a, b], "count": c, "cross_shard": cross})
     slowest = sorted(slow.values(), key=lambda x: -x["latency_ms"])[:slow_n]
-    return {"total_queries": len(entries), "tables": tables, "frequent_joins": top_joins, "slow_queries": slowest}
+    return {"total_queries": len(entries), "tables": tables, "frequent_joins": top_joins, "slow_queries": slowest,
+            "hot_keys": hotkeys.detect(entries)}
