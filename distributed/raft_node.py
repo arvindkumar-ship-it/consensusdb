@@ -1,5 +1,6 @@
-from .states import Nodestate
+import random
 from dataclasses import dataclass
+from .states import Nodestate
 
 
 @dataclass
@@ -18,10 +19,14 @@ class RaftNode:
         self.current_term = 0
         self.voted_for: str | None = None
         self.votes: set[str] = set()
-        self.log = [LogEntry(0, "")]   # index 0 sentinel, real entries 1 se
+        self.log = [LogEntry(0, "")]   # index 0 sentinel
         self.commit_index = 0
         self.next_index = {}
         self.match_index = {}
+
+        self.alive = True              # False = node crashed
+        self.elapsed = 0               # last heartbeat se kitne tick guzre
+        self.timeout = random.randint(5, 10)
 
     def connect_peers(self, peers: dict[str, "RaftNode"]):
         self.peers = peers
@@ -35,8 +40,7 @@ class RaftNode:
         self.voted_for = None
         self.votes = set()
 
-    def handle_request_vote(self, term: int, candidate_id: str,
-                            last_log_index: int = 0, last_log_term: int = 0) -> tuple[int, bool]:
+    def handle_request_vote(self, term, candidate_id, last_log_index=0, last_log_term=0):
         if term < self.current_term:
             return self.current_term, False
         if term > self.current_term:
@@ -44,6 +48,7 @@ class RaftNode:
         ok = (last_log_term, last_log_index) >= (self.log[-1].term, len(self.log) - 1)
         if ok and (self.voted_for is None or self.voted_for == candidate_id):
             self.voted_for = candidate_id
+            self.elapsed = 0
             return self.current_term, True
         return self.current_term, False
 
@@ -53,6 +58,8 @@ class RaftNode:
         self.voted_for = self.node_id
         self.votes = {self.node_id}
         for pid in self.peer_ids:
+            if not self.peers[pid].alive:
+                continue
             term, granted = self.peers[pid].handle_request_vote(
                 self.current_term, self.node_id, len(self.log) - 1, self.log[-1].term)
             if term > self.current_term:
@@ -71,6 +78,7 @@ class RaftNode:
         if term > self.current_term:
             self._step_down(term)
         self.state = Nodestate.FOLLOWER
+        self.elapsed = 0
         if prev_idx >= len(self.log) or self.log[prev_idx].term != prev_term:
             return self.current_term, False
         for i, e in enumerate(entries):
@@ -92,6 +100,8 @@ class RaftNode:
 
     def replicate(self):
         for pid in self.peer_ids:
+            if not self.peers[pid].alive:
+                continue
             while self.state == Nodestate.LEADER:
                 prev = self.next_index[pid] - 1
                 entries = self.log[prev + 1:]
@@ -111,3 +121,15 @@ class RaftNode:
             if self.log[n].term == self.current_term and acks >= self.majority():
                 self.commit_index = n
                 break
+
+    def tick(self):
+        if not self.alive:
+            return
+        if self.state == Nodestate.LEADER:
+            self.replicate()           # heartbeat
+            return
+        self.elapsed += 1
+        if self.elapsed >= self.timeout:
+            self.elapsed = 0
+            self.timeout = random.randint(5, 10)
+            self.start_election()
