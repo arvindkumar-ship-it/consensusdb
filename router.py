@@ -1,10 +1,19 @@
-﻿import json
+import json
+import time
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlparse
+
+from abtest.experiment import ExperimentManager
 from distributed.config import GROUPS
 from distributed.ring import Ring
+from optimizer.service import OptimizerService
+from workload.recorder import WorkloadRecorder
 
 ring = Ring(list(GROUPS))
+recorder = WorkloadRecorder()
+optimizer = OptimizerService(recorder, group_of=ring.get)
+experiments = ExperimentManager()
 
 
 def call(port, path, body=None):
@@ -24,42 +33,95 @@ def leader_port(group):
     return None
 
 
+def sql_write(table, sql):
+    g = ring.get(table)
+    port = leader_port(g)
+    if port is None:
+        return {"group": g, "error": "no leader"}
+    return {"group": g, "ok": call(port, "/client", {"cmd": sql})}
+
+
+def timed_sql(path, b):
+    """/sql ya /query: route karo, time naapo, workload log me daalo, A/B buckets me record karo."""
+    g = ring.get(b["table"])
+    port = leader_port(g)
+    if port is None:
+        return {"group": g, "error": "no leader"}
+    t0 = time.perf_counter()
+    if path == "/sql":
+        out = {"group": g, "ok": call(port, "/client", {"cmd": b["sql"]})}
+    else:
+        out = {"group": g, **call(port, "/query", {"sql": b["sql"]})}
+    ms = (time.perf_counter() - t0) * 1000
+    ok = "error" not in out
+    buckets = experiments.assign(b["sql"])
+    first = next(iter(buckets.values()), None)
+    recorder.record(b["sql"], b["table"], ms, g, ok, "write" if path == "/sql" else "read", first)
+    for name, bk in buckets.items():
+        experiments.record(name, bk, ms, ok)
+    return out
+
+
 class Router(BaseHTTPRequestHandler):
-    def do_POST(self):
-        b = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
-        try:
-            out = self.route(b)
-        except OSError as e:
-            out = {"error": f"upstream: {e}"}
+    def _send(self, out):
         data = json.dumps(out).encode()
         self.send_response(200)
+        self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
 
-    def route(self, b):
-        if self.path in ("/sql", "/query"):
+    def do_POST(self):
+        b = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+        try:
+            out = self.route(urlparse(self.path).path, b)
+        except OSError as e:
+            out = {"error": f"upstream: {e}"}
+        self._send(out)
+
+    def do_GET(self):
+        try:
+            out = self.route(urlparse(self.path).path, {})
+        except OSError as e:
+            out = {"error": f"upstream: {e}"}
+        self._send(out)
+
+    def route(self, path, b):
+        # ---- workload / optimizer / A-B (naye) ----
+        if path == "/stats":
+            return {"entries": len(recorder.snapshot()), "tables": recorder.schema.tables and {
+                t: {**d, "indexes": sorted(d["indexes"])} for t, d in recorder.schema.tables.items()}}
+        if path == "/optimize/run":
+            return optimizer.generate()
+        if path == "/optimize/apply":
+            return optimizer.apply(b.get("id", ""), sql_write)
+        if path == "/optimize/impact":
+            return optimizer.impact(b.get("id", ""))
+        if path == "/ab/start":
+            experiments.start(b["name"], int(b.get("treatment_pct", 50)))
+            return {"started": b["name"]}
+        if path == "/ab/report":
+            return experiments.report(b.get("name", ""))
+        if path == "/ab/stop":
+            experiments.stop(b.get("name", ""))
+            return {"stopped": b.get("name")}
+
+        # ---- purane routes (same behaviour) ----
+        if path in ("/sql", "/query"):
             if "table" not in b or "sql" not in b:
                 return {"error": 'body: {"table": "...", "sql": "..."}'}
-            g = ring.get(b["table"])
-            port = leader_port(g)
-            if port is None:
-                return {"group": g, "error": "no leader"}
-            if self.path == "/sql":
-                return {"group": g, "ok": call(port, "/client", {"cmd": b["sql"]})}
-            return {"group": g, **call(port, "/query", {"sql": b["sql"]})}
-
+            return timed_sql(path, b)
         if "key" not in b:
             return {"error": "use /set /get /del (key) ya /sql /query (table, sql)"}
         g = ring.get(b["key"])
         port = leader_port(g)
         if port is None:
             return {"group": g, "error": "no leader"}
-        if self.path == "/set":
+        if path == "/set":
             return {"group": g, "ok": call(port, "/client", {"cmd": f"SET {b['key']} {b['value']}"})}
-        if self.path == "/del":
+        if path == "/del":
             return {"group": g, "ok": call(port, "/client", {"cmd": f"DEL {b['key']}"})}
-        if self.path == "/get":
+        if path == "/get":
             return {"group": g, **call(port, "/get", b)}
         return {"error": "use /set /get /del /sql /query"}
 
@@ -67,4 +129,5 @@ class Router(BaseHTTPRequestHandler):
         pass
 
 
-ThreadingHTTPServer(("127.0.0.1", 8000), Router).serve_forever()
+if __name__ == "__main__":
+    ThreadingHTTPServer(("127.0.0.1", 8000), Router).serve_forever()
