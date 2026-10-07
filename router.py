@@ -1,4 +1,4 @@
-import json
+﻿import json
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from distributed.config import GROUPS
@@ -27,23 +27,41 @@ def leader_port(group):
 class Router(BaseHTTPRequestHandler):
     def do_POST(self):
         b = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
-        g = ring.get(b["key"])
-        port = leader_port(g)
-        if port is None:
-            out = {"group": g, "error": "no leader"}
-        elif self.path == "/set":
-            out = {"group": g, "ok": call(port, "/client", {"cmd": f"SET {b['key']} {b['value']}"})}
-        elif self.path == "/del":
-            out = {"group": g, "ok": call(port, "/client", {"cmd": f"DEL {b['key']}"})}
-        elif self.path == "/get":
-            out = {"group": g, **call(port, "/get", b)}
-        else:
-            out = {"error": "use /set /get /del"}
+        try:
+            out = self.route(b)
+        except OSError as e:
+            out = {"error": f"upstream: {e}"}
         data = json.dumps(out).encode()
         self.send_response(200)
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
+
+    def route(self, b):
+        if self.path in ("/sql", "/query"):
+            if "table" not in b or "sql" not in b:
+                return {"error": 'body: {"table": "...", "sql": "..."}'}
+            g = ring.get(b["table"])
+            port = leader_port(g)
+            if port is None:
+                return {"group": g, "error": "no leader"}
+            if self.path == "/sql":
+                return {"group": g, "ok": call(port, "/client", {"cmd": b["sql"]})}
+            return {"group": g, **call(port, "/query", {"sql": b["sql"]})}
+
+        if "key" not in b:
+            return {"error": "use /set /get /del (key) ya /sql /query (table, sql)"}
+        g = ring.get(b["key"])
+        port = leader_port(g)
+        if port is None:
+            return {"group": g, "error": "no leader"}
+        if self.path == "/set":
+            return {"group": g, "ok": call(port, "/client", {"cmd": f"SET {b['key']} {b['value']}"})}
+        if self.path == "/del":
+            return {"group": g, "ok": call(port, "/client", {"cmd": f"DEL {b['key']}"})}
+        if self.path == "/get":
+            return {"group": g, **call(port, "/get", b)}
+        return {"error": "use /set /get /del /sql /query"}
 
     def log_message(self, *a):
         pass

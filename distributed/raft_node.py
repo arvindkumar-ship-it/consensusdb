@@ -139,10 +139,10 @@ class RaftNode:
     def apply_committed(self):
         """Commit ho chuki entries ko order mein state machine pe chalao."""
         while self.last_applied < self.commit_index:
-            self.last_applied += 1
-            cmd = self.log[self.last_applied].command
+            cmd = self.log[self.last_applied + 1].command
             if self.sm and cmd != "NOOP":
-                self.sm.apply(cmd)
+                self.sm.apply(cmd)      # exception aaye to entry skip nahi hogi, agle tick pe retry
+            self.last_applied += 1
 
     def tick(self):
         if not self.alive:

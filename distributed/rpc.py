@@ -94,6 +94,11 @@ def serve(node, port):
                         ok = node.client_request(body["cmd"])
                         out = ok and node.commit_index == len(node.log) - 1  # True = commit bhi hua
                         done(node)
+                    elif self.path == "/query":
+                        try:
+                            out = {"result": node.sm.query(body["sql"])}
+                        except Exception as e:      # SqlError ya KV mode (query nahi hai)
+                            out = {"error": str(e)}
                     elif self.path == "/get":
                         out = {"value": node.sm.data.get(body["key"])}
                     else:
