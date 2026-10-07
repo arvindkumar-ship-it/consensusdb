@@ -1,4 +1,5 @@
 import random
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from .states import Nodestate
 
@@ -27,6 +28,8 @@ class RaftNode:
         self.log = [LogEntry(0, "")]   # index 0 sentinel
         self.commit_index = 0
         self.last_applied = 0          # state machine pe kahan tak apply hua
+        self._pool = None
+        self.apply_errors = {}         # log index -> SQL error (sirf jahan sm ne reject kiya)
         self.sm = None                 # state machine, koi bhi object jisme apply(cmd) ho
         self.next_index = {}
         self.match_index = {}
@@ -109,27 +112,37 @@ class RaftNode:
         self.replicate()
         return True
 
+    def _push(self, pid):
+        """Ek peer ko log bhejo. Higher term mila to wo term return karo, warna None."""
+        if not self.peers[pid].alive:
+            return None
+        while self.state == Nodestate.LEADER:
+            prev = self.next_index[pid] - 1
+            entries = self.log[prev + 1:]
+            try:
+                term, ok = self.peers[pid].handle_append_entries(
+                    self.current_term, self.node_id, prev, self.log[prev].term,
+                    entries, self.commit_index)
+            except OSError:
+                return None        # ye peer skip, baaki peers ko heartbeat jaane do
+            if term > self.current_term:
+                return term
+            if ok:
+                self.match_index[pid] = prev + len(entries)
+                self.next_index[pid] = prev + len(entries) + 1
+                return None
+            self.next_index[pid] -= 1
+        return None
+
     def replicate(self):
-        for pid in self.peer_ids:
-            if not self.peers[pid].alive:
-                continue
-            while self.state == Nodestate.LEADER:
-                prev = self.next_index[pid] - 1
-                entries = self.log[prev + 1:]
-                try:
-                    term, ok = self.peers[pid].handle_append_entries(
-                        self.current_term, self.node_id, prev, self.log[prev].term,
-                        entries, self.commit_index)
-                except OSError:
-                    break          # ye peer skip, baaki peers ko heartbeat jaane do
-                if term > self.current_term:
-                    self._step_down(term)
-                    return
-                if ok:
-                    self.match_index[pid] = prev + len(entries)
-                    self.next_index[pid] = prev + len(entries) + 1
-                    break
-                self.next_index[pid] -= 1
+        # peers parallel: total latency = sabse slow peer, sum nahi
+        if self._pool is None:
+            self._pool = ThreadPoolExecutor(max_workers=max(1, len(self.peer_ids)))
+        results = dict(zip(self.peer_ids, self._pool.map(self._push, self.peer_ids)))
+        higher = [t for t in results.values() if t]
+        if higher:
+            self._step_down(max(higher))
+            return
         for n in range(len(self.log) - 1, self.commit_index, -1):
             acks = 1 + sum(m >= n for m in self.match_index.values())
             if self.log[n].term == self.current_term and acks >= self.majority():
@@ -142,6 +155,11 @@ class RaftNode:
             cmd = self.log[self.last_applied + 1].command
             if self.sm and cmd != "NOOP":
                 self.sm.apply(cmd)      # exception aaye to entry skip nahi hogi, agle tick pe retry
+                err = getattr(self.sm, "last_error", None)
+                if err:
+                    self.apply_errors[self.last_applied + 1] = err
+                    if len(self.apply_errors) > 1000:
+                        self.apply_errors.pop(next(iter(self.apply_errors)))
             self.last_applied += 1
 
     def tick(self):

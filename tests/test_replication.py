@@ -18,3 +18,19 @@ def test_stale_log_cannot_win(make_cluster):
 
 def test_majority_4_nodes(make_cluster):
     assert make_cluster(4)["n1"].majority() == 3
+
+def test_sql_reject_is_recorded_per_index(make_cluster):
+    """sm ne reject kiya to apply_errors[index] me aana chahiye (optimizer.apply isi se sach batata hai)."""
+    class RejectingSM:
+        last_error = None
+
+        def apply(self, cmd):
+            self.last_error = "boom" if cmd == "BAD" else None
+    nodes = make_cluster(3)
+    leader = nodes["n1"]
+    leader.sm = RejectingSM()
+    leader.start_election()
+    leader.client_request("BAD")
+    leader.replicate()
+    leader.apply_committed()
+    assert "boom" in leader.apply_errors.values()

@@ -134,10 +134,14 @@ class MkdbSM:
             raise
 
     # ---- Raft state machine interface ----
+    last_error = None
+
     def apply(self, cmd: str):
+        self.last_error = None
         try:
             return self.execute(cmd)
-        except SqlError:
+        except SqlError as e:
+            self.last_error = str(e)        # raft_node isse index ke hisaab se rakhta hai
             return None
 
     def query(self, sql: str) -> str:

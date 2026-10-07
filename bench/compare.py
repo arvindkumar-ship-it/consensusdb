@@ -25,12 +25,14 @@ def index_effect(send, tables, rows, threads):
     """Full scan chalao, optimizer ka index lagao, wahi scan dobara."""
     scan = make_jobs(tables, rows)["scan"]
     before = run_phase("scan, index se pehle", scan, threads, send)
-    run_phase("scan warmup", scan, threads, send)
+    run_phase("scan warmup", scan, threads, send)   # workload ko 30% threshold paar karwane ke liye
     sugg = [s for s in send("/optimize/run", {})["suggestions"] if s["table"] in tables]
-    applied = [s["ddl"] for s in sugg if send("/optimize/apply", {"id": s["id"]}).get("applied")]
-        assert applied, f"koi index apply nahi hua: {[s['table'] for s in sugg]}"
+    done = [s for s in sugg if send("/optimize/apply", {"id": s["id"]}).get("applied")]
+    applied = [s["ddl"] for s in done]
+    assert applied, f"koi index apply nahi hua: {[s['table'] for s in sugg]}"
     after = run_phase("scan, index ke baad", scan, threads, send)
-    return {"applied": applied, "before": before, "after": after}
+    impact = [send("/optimize/impact", {"id": s["id"]}) for s in done]
+    return {"applied": applied, "before": before, "after": after, "impact": impact}
 
 
 def main():

@@ -15,10 +15,12 @@ SEL_SCAN = "SELECT * FROM {t} WHERE name = 'user{i}'"
 
 
 def router_send(url):
+    from urllib.parse import urlparse
+    from distributed.conn import post_json
+    u = urlparse(url)
+
     def send(path, body):
-        req = urllib.request.Request(url + path, json.dumps(body).encode(), {"Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=30) as r:
-            return json.loads(r.read())
+        return post_json(u.hostname, u.port, path, body, 30)
     return send
 
 

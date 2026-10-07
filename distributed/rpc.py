@@ -1,18 +1,19 @@
 import json, os, threading, time, urllib.request
 from dataclasses import asdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlparse
+from .conn import post_json
 from .raft_node import LogEntry
 
 
 class RemotePeer:
     def __init__(self, url):
         self.url = url
+        u = urlparse(url)
+        self.host, self.port = u.hostname, u.port
 
     def _post(self, path, body):
-        req = urllib.request.Request(self.url + path, json.dumps(body).encode(),
-                                     {"Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=0.5) as r:
-            return json.loads(r.read())
+        return post_json(self.host, self.port, path, body, 0.5)
 
     @property
     def alive(self):
@@ -29,45 +30,126 @@ class RemotePeer:
         return tuple(self._post("/append", {"args": args}))
 
 
-def save(node):
-    path = f"data/{node.node_id}.json"
-    os.makedirs("data", exist_ok=True)
-    d = {"term": node.current_term, "voted_for": node.voted_for,
-         "log": [asdict(e) for e in node.log]}
-    with open(path + ".tmp", "w") as f:
-        json.dump(d, f)
-        f.flush()
-        os.fsync(f.fileno())
+# ---- persistence: data/<id>.log (JSON lines, append-only) + data/<id>.meta.json (term, voted_for) ----
+_DIR = "data"
+_st = {}    # node_id -> {"n": persisted entries, "last": log[n] object, "meta": (term, voted_for), "f": append handle}
+
+
+def _paths(node):
+    b = f"{_DIR}/{node.node_id}"
+    return b + ".log", b + ".meta.json", b + ".json"      # teesra: purana single-file format
+
+
+def _replace(src, dst):
     for _ in range(50):               # Windows pe file locked ho to retry
         try:
-            os.replace(path + ".tmp", path)
+            os.replace(src, dst)
             return
         except PermissionError:
             time.sleep(0.01)
-    os.replace(path + ".tmp", path)
+    os.replace(src, dst)
+
+
+def _write_atomic(path, data):
+    with open(path + ".tmp", "wb") as f:
+        f.write(data)
+        f.flush()
+        os.fsync(f.fileno())
+    _replace(path + ".tmp", path)
+
+
+def _line(e):
+    return (json.dumps([e.term, e.command]) + "\n").encode()
+
+
+def _rewrite(node):
+    """Poora log dobara likho (pehli baar, truncate ke baad, ya bad file ke baad)."""
+    logp = _paths(node)[0]
+    os.makedirs(_DIR, exist_ok=True)
+    old = _st.get(node.node_id)
+    if old and old["f"]:
+        old["f"].close()              # Windows pe open handle ke upar replace nahi hota
+    _write_atomic(logp, b"".join(_line(e) for e in node.log[1:]))
+    st = _st[node.node_id] = {"n": len(node.log) - 1,
+                              "last": node.log[-1] if len(node.log) > 1 else None,
+                              "meta": old["meta"] if old else None,
+                              "f": open(logp, "ab")}
+    return st
+
+
+def _persist_meta(node, st):
+    meta = (node.current_term, node.voted_for)
+    if st["meta"] != meta:
+        _write_atomic(_paths(node)[1],
+                      json.dumps({"term": meta[0], "voted_for": meta[1]}).encode())
+        st["meta"] = meta
+
+
+def persist(node):
+    st = _st.get(node.node_id)
+    n = len(node.log) - 1
+    # last persisted entry abhi bhi wahi object hai => beech mein truncate nahi hua
+    intact = st is not None and (st["n"] == 0 or (n >= st["n"] and node.log[st["n"]] is st["last"]))
+    if not intact:
+        st = _rewrite(node)
+    elif n > st["n"]:
+        if st["f"] is None:
+            st["f"] = open(_paths(node)[0], "ab")
+        st["f"].write(b"".join(_line(e) for e in node.log[st["n"] + 1:]))
+        st["f"].flush()
+        os.fsync(st["f"].fileno())
+        st["n"], st["last"] = n, node.log[n]
+    _persist_meta(node, st)
+
+
+def save(node):
+    _rewrite(node)
+    _persist_meta(node, _st[node.node_id])
 
 
 def load(node):
-    try:
-        with open(f"data/{node.node_id}.json") as f:
-            d = json.load(f)
-    except FileNotFoundError:
+    logp, metap, old = _paths(node)
+    _st.pop(node.node_id, None)
+    if not os.path.exists(logp) and not os.path.exists(metap):
+        try:
+            with open(old) as f:      # purana format: migrate, naye format mein pehle persist pe likhega
+                d = json.load(f)
+        except FileNotFoundError:
+            return
+        node.current_term, node.voted_for = d["term"], d["voted_for"]
+        node.log = [LogEntry(**e) for e in d["log"]]
         return
-    node.current_term, node.voted_for = d["term"], d["voted_for"]
-    node.log = [LogEntry(**e) for e in d["log"]]
-
-
-_last = {}                            # node_id -> last saved fingerprint
+    meta = None
+    try:
+        with open(metap) as f:
+            d = json.load(f)
+        node.current_term, node.voted_for = d["term"], d["voted_for"]
+        meta = (d["term"], d["voted_for"])
+    except (FileNotFoundError, ValueError, KeyError):
+        pass
+    ents, bad = [], False
+    try:
+        with open(logp, "rb") as f:
+            for raw in f:
+                try:
+                    if not raw.endswith(b"\n"):
+                        raise ValueError("torn line")
+                    t, c = json.loads(raw)
+                    ents.append(LogEntry(t, c))
+                except (ValueError, TypeError):
+                    bad = True        # crash mein adhoori likhi last line: chhod do
+                    break
+    except FileNotFoundError:
+        pass
+    node.log = [node.log[0]] + ents
+    if not bad:
+        _st[node.node_id] = {"n": len(ents), "last": ents[-1] if ents else None, "meta": meta, "f": None}
+    # bad ho to _st khaali: agla persist file saaf karke dobara likhega
 
 
 def done(node):
-    # sirf tab fsync jab persistent state (term, voted_for, log) badli ho
-    key = (node.current_term, node.voted_for, len(node.log),
-           node.log[-1].term, node.log[-1].command)
-    if _last.get(node.node_id) != key:
-        save(node)
-        _last[node.node_id] = key
-    node.apply_committed()            # pehle disk, phir state machine
+    persist(node)                     # pehle disk, phir state machine
+    node.apply_committed()
 
 
 def serve(node, port):
@@ -75,6 +157,10 @@ def serve(node, port):
     lock = threading.Lock()
 
     class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"       # keep-alive
+        disable_nagle_algorithm = True
+        wbufsize = -1                      # header+body ek hi segment me
+
         def do_POST(self):
             n = int(self.headers.get("Content-Length", 0))
             body = json.loads(self.rfile.read(n) or b"{}")
@@ -93,7 +179,11 @@ def serve(node, port):
                     elif self.path == "/client":
                         ok = node.client_request(body["cmd"])
                         out = ok and node.commit_index == len(node.log) - 1  # True = commit bhi hua
+                        idx = len(node.log) - 1
                         done(node)
+                        err = node.apply_errors.pop(idx, None) if ok else None
+                        if err:
+                            out = {"error": err}
                     elif self.path == "/query":
                         try:
                             out = {"result": node.sm.query(body["sql"])}

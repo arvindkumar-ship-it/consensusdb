@@ -5,6 +5,7 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
+from distributed.conn import post_json
 from abtest.experiment import ExperimentManager
 from distributed.config import GROUPS, SPARE
 from distributed.rebalance import rebalance
@@ -20,10 +21,7 @@ rebalancing = False
 
 
 def call(port, path, body=None):
-    req = urllib.request.Request(f"http://127.0.0.1:{port}{path}", json.dumps(body or {}).encode(),
-                                 {"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=3) as r:
-        return json.loads(r.read())
+    return post_json("127.0.0.1", port, path, body or {}, 3)
 
 
 def leader_port(group):
@@ -61,12 +59,19 @@ def add_group(name):
         rebalancing = False
 
 
+def _lift(g, res):
+    """Node ka SQL error top-level 'error' bane, taaki ok/applied sahi nikle."""
+    if isinstance(res, dict) and "error" in res:
+        return {"group": g, "error": res["error"]}
+    return {"group": g, "ok": res}
+
+
 def sql_write(table, sql):
     g = ring.get(table)
     port = leader_port(g)
     if port is None:
         return {"group": g, "error": "no leader"}
-    return {"group": g, "ok": call(port, "/client", {"cmd": sql})}
+    return _lift(g, call(port, "/client", {"cmd": sql}))
 
 
 def timed_sql(path, b):
@@ -77,7 +82,7 @@ def timed_sql(path, b):
         return {"group": g, "error": "no leader"}
     t0 = time.perf_counter()
     if path == "/sql":
-        out = {"group": g, "ok": call(port, "/client", {"cmd": b["sql"]})}
+        out = _lift(g, call(port, "/client", {"cmd": b["sql"]}))
     else:
         out = {"group": g, **call(port, "/query", {"sql": b["sql"]})}
     ms = (time.perf_counter() - t0) * 1000
@@ -91,6 +96,10 @@ def timed_sql(path, b):
 
 
 class Router(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+    disable_nagle_algorithm = True
+    wbufsize = -1
+
     def _send(self, out):
         data = json.dumps(out).encode()
         self.send_response(200)
