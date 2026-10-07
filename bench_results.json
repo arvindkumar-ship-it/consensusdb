@@ -1,0 +1,32 @@
+[
+ {
+  "phase": "insert (raft write)",
+  "ops": 400,
+  "errors": 0,
+  "ops_per_sec": 11.8,
+  "p50_ms": 331.16,
+  "p95_ms": 490.23,
+  "p99_ms": 566.31,
+  "mean_ms": 338.1
+ },
+ {
+  "phase": "select by pk (point lookup)",
+  "ops": 400,
+  "errors": 0,
+  "ops_per_sec": 136.6,
+  "p50_ms": 21.8,
+  "p95_ms": 90.02,
+  "p99_ms": 100.61,
+  "mean_ms": 29.16
+ },
+ {
+  "phase": "select by non-key (full scan)",
+  "ops": 80,
+  "errors": 0,
+  "ops_per_sec": 114.7,
+  "p50_ms": 29.95,
+  "p95_ms": 93.87,
+  "p99_ms": 108.46,
+  "mean_ms": 34.1
+ }
+]

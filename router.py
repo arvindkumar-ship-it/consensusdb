@@ -1,4 +1,5 @@
-import json
+﻿import json
+import os
 import time
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -130,4 +131,5 @@ class Router(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    ThreadingHTTPServer(("127.0.0.1", 8000), Router).serve_forever()
+    ThreadingHTTPServer(("127.0.0.1", int(os.environ.get("ROUTER_PORT", "8000"))), Router).serve_forever()
+

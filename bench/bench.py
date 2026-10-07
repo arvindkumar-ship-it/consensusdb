@@ -1,4 +1,4 @@
-"""Router (port 8000) pe load daal ke latency/throughput naapna.
+﻿"""Router (port 8000) pe load daal ke latency/throughput naapna.
 
 Chalao:   python -m bench.bench --tables 4 --rows 500 --threads 8
 Agar mkdb ka SQL syntax alag hai to neeche DDL/INS/SEL templates badal do.
@@ -10,7 +10,7 @@ import threading
 import time
 import urllib.request
 
-DDL = "CREATE TABLE {t} (id INT, name TEXT)"
+DDL = "CREATE TABLE {t} (id INT PRIMARY KEY, name TEXT)"
 INS = "INSERT INTO {t} VALUES ({i}, 'user{i}')"
 SEL = "SELECT * FROM {t} WHERE id = {i}"
 SEL_SCAN = "SELECT * FROM {t} WHERE name = 'user{i}'"
@@ -68,7 +68,9 @@ def main():
     ap.add_argument("--rows", type=int, default=500)
     ap.add_argument("--threads", type=int, default=8)
     a = ap.parse_args()
-    tables = [f"bench_{int(time.time())}_{k}" for k in range(a.tables)]
+    import random, string
+    tag = "".join(random.choices(string.ascii_lowercase, k=5))
+    tables = [f"bench{tag}{chr(97 + k)}" for k in range(a.tables)]
     for t in tables:
         post(a.url, "/sql", {"table": t, "sql": DDL.format(t=t)})
     ins = [("/sql", {"table": t, "sql": INS.format(t=t, i=i)}) for t in tables for i in range(a.rows)]
@@ -84,3 +86,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
