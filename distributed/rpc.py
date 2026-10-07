@@ -1,4 +1,4 @@
-import json, os, threading, time, urllib.request
+import http.client, json, os, threading, time, urllib.request
 from dataclasses import asdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
@@ -7,20 +7,52 @@ from .raft_node import LogEntry
 
 
 class RemotePeer:
+    """
+    alive = cached flag, request path me network call nahi.
+    Background thread har 0.2s peer ko ping karta hai; kisi call me OSError aaye to
+    turant down mark. Pehle har replicate/tick pe dead peer ko ping hota tha
+    (timeout ~0.5s x retry) aur wo node ka global lock pakde rehta tha.
+    """
+    PING_EVERY = 0.2
+    PING_TIMEOUT = 0.3     # Windows pe closed port ~2s leta hai; timeout isse cap karta hai
+
     def __init__(self, url):
         self.url = url
         u = urlparse(url)
         self.host, self.port = u.hostname, u.port
+        self._alive = True            # optimistic; watcher jaldi sahi kar deta hai
+        threading.Thread(target=self._watch, daemon=True).start()
+
+    def _ping(self):
+        # apna alag connection: post_json ke shared state se koi takrav nahi
+        c = http.client.HTTPConnection(self.host, self.port, timeout=self.PING_TIMEOUT)
+        try:
+            c.request("POST", "/ping", b"{}",
+                      {"Content-Type": "application/json", "Content-Length": "2"})
+            return bool(json.loads(c.getresponse().read())["alive"])
+        finally:
+            c.close()
+
+    def _watch(self):
+        while True:
+            try:
+                self._alive = self._ping()
+            except Exception:
+                self._alive = False
+            time.sleep(self.PING_EVERY)
 
     def _post(self, path, body):
-        return post_json(self.host, self.port, path, body, 0.5)
+        try:
+            out = post_json(self.host, self.port, path, body, 0.5)
+        except OSError:
+            self._alive = False       # isi call me fail hua to agle calls skip honge
+            raise
+        self._alive = True
+        return out
 
     @property
     def alive(self):
-        try:
-            return self._post("/ping", {})["alive"]
-        except OSError:
-            return False
+        return self._alive
 
     def handle_request_vote(self, *args):
         return tuple(self._post("/vote", {"args": args}))
@@ -155,6 +187,42 @@ def done(node):
 def serve(node, port):
     load(node)
     lock = threading.Lock()
+    pending, plock = [], threading.Lock()
+
+    def flush(batch):
+        """Lock pakde hue: batch ki saari entries append -> ek replicate -> ek fsync (done)."""
+        try:
+            for s in batch:
+                s["idx"] = node.client_append(s["cmd"])
+            if any(s["idx"] is not None for s in batch):
+                node.replicate()
+                done(node)
+            for s in batch:
+                if s["idx"] is None:
+                    s["out"] = False                      # leader nahi
+                else:
+                    err = node.apply_errors.pop(s["idx"], None)
+                    s["out"] = {"error": err} if err else node.commit_index >= s["idx"]  # True = commit hua
+        except Exception as e:
+            for s in batch:
+                if s["out"] is None:
+                    s["out"] = {"error": f"flush: {e!r}"}
+        finally:
+            for s in batch:
+                s["done"] = True
+
+    def submit(cmd):
+        """Group commit: jo thread lock pehle le, wo pending sabki entries ek saath chalata hai."""
+        slot = {"cmd": cmd, "idx": None, "out": None, "done": False}
+        with plock:
+            pending.append(slot)
+        with lock:
+            if not slot["done"]:
+                with plock:
+                    batch = pending[:]
+                    del pending[:]
+                flush(batch)
+        return slot["out"]
 
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"       # keep-alive
@@ -166,6 +234,8 @@ def serve(node, port):
             body = json.loads(self.rfile.read(n) or b"{}")
             if self.path == "/ping":
                 out = {"alive": node.alive}
+            elif self.path == "/client":
+                out = submit(body["cmd"])
             else:
                 with lock:
                     if self.path == "/vote":
@@ -176,14 +246,6 @@ def serve(node, port):
                         a[4] = [LogEntry(**e) for e in a[4]]
                         out = node.handle_append_entries(*a)
                         done(node)
-                    elif self.path == "/client":
-                        ok = node.client_request(body["cmd"])
-                        out = ok and node.commit_index == len(node.log) - 1  # True = commit bhi hua
-                        idx = len(node.log) - 1
-                        done(node)
-                        err = node.apply_errors.pop(idx, None) if ok else None
-                        if err:
-                            out = {"error": err}
                     elif self.path == "/query":
                         try:
                             out = {"result": node.sm.query(body["sql"])}
@@ -217,4 +279,5 @@ def serve(node, port):
                     pass
 
     threading.Thread(target=ticker, daemon=True).start()
+    ThreadingHTTPServer.request_queue_size = 128
     ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
