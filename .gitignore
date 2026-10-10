@@ -9,3 +9,6 @@ data/
 *.patch
 *.mkdb
 *.mkdb-journal
+
+node_modules/
+frontend/dist/

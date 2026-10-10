@@ -247,11 +247,10 @@ CHAOS_SEEDS=3000 python -m pytest tests/test_chaos.py    # gehra chaos run
 
 ## Known issues
 
-1. **Router regression at HEAD.** Commit `16aa835` ne router naye KV version se replace kiya, aur optimizer/A-B/rebalance wiring (`/stats`, `/optimize/*`, `/ab/*`, `/rebalance/add`, `ROUTER_PORT`) nahi aayi. Wo commit `8c85d67` ke router me hai. Modules aur unke tests intact hain, sirf router me jodna baaki hai. `bench/compare.py` aur Docker healthcheck iske bina nahi chalenge.
-2. **Docker:** entrypoint router ko `ROUTER_PORT=8100` deta hai, router 8000 pe hardcoded hai.
-3. **`bench_results.json`** purane router (group commit se pehle) ka hai, SQL write numbers dobara naapne par behtar aane chahiye.
-4. **LLM live path verify nahi hua.** `test_llm_live.py` bina key ke skip hota hai. Rules fallback tested hai.
-5. **Windows defaults:** `D:\` paths `start_all.ps1` aur `mkdb_sm.py` me hardcoded (env se override).
+1. **Live LLM path is optional and unverified here.** Tests skip it without a provider key.
+2. **Stored benchmarks are historical.** Rerun `bench/compare.py` on your own machine; do not quote its numbers as new results.
+3. **Native engine location:** install `mkdb_server` on PATH or set `MKDB_SERVER` to an absolute path. `MKDB_DLL_DIR` is optional on Windows.
+4. `/stats`, `/optimize/*`, `/ab/*`, `/rebalance/add` and `ROUTER_PORT` are wired in the current router; earlier regression notes referred to older commits.
 
 ## Known limits
 
@@ -300,3 +299,5 @@ bench/         bench, compare, index_direct
 docs/diagrams/ SVG diagrams
 tests/
 ```
+
+Audit repair scope, reproducible checks and remaining limitations: [AUDIT_FIXES.md](AUDIT_FIXES.md).

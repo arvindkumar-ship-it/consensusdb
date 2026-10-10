@@ -14,11 +14,13 @@ Design:
 """
 import os
 import socket
+import shutil
+from pathlib import Path
 import subprocess
 import time
 
-DEFAULT_BIN = r"D:\mkdb\build\mkdb_server.exe"
-DEFAULT_DLL_DIR = r"D:\msys64\ucrt64\bin"   # libstdc++/libgcc/winpthread DLLs
+DEFAULT_BIN = shutil.which("mkdb_server") or str(Path(__file__).resolve().parents[2] / "kuchh-nhi-" / "build" / ("mkdb_server.exe" if os.name == "nt" else "mkdb_server"))
+DEFAULT_DLL_DIR = ""  # Set MKDB_DLL_DIR only if the Windows compiler runtime needs it.
 
 
 class SqlError(Exception):
@@ -53,7 +55,8 @@ class MkdbSM:
 
     def _start_server(self):
         env = os.environ.copy()
-        env["PATH"] = self.dll_dir + os.pathsep + env.get("PATH", "")
+        if self.dll_dir:
+            env["PATH"] = self.dll_dir + os.pathsep + env.get("PATH", "")
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         self.logf = open(self.db_path + ".log", "wb")
         self.proc = subprocess.Popen(
