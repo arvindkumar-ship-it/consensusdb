@@ -3,7 +3,7 @@ from dataclasses import asdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 from .conn import post_json
-from .raft_node import LogEntry
+from .raft_node import LogEntry, split_cmd
 
 
 class RemotePeer:
@@ -186,23 +186,33 @@ def done(node):
 
 def serve(node, port):
     load(node)
-    lock = threading.Lock()
+    lock = node.mu                          # node ka apna lock: network wait ke time chhoot jaata hai
+    node.wait_all = False                   # commit majority pe, slow follower ka wait nahi
+    node.persist_hook = lambda: persist(node)
     pending, plock = [], threading.Lock()
+    COMMIT_WAIT = 2.0
 
     def flush(batch):
-        """Lock pakde hue: batch ki saari entries append -> ek replicate -> ek fsync (done)."""
+        """Batch ki entries append -> ek fsync -> majority commit ka wait -> apply.
+        Jawab: True = commit hua, False = pakka nahi hua (retry safe), unknown = pata nahi (same rid se retry)."""
         try:
+            term = node.current_term
             for s in batch:
                 s["idx"] = node.client_append(s["cmd"])
-            if any(s["idx"] is not None for s in batch):
-                node.replicate()
+            idxs = [s["idx"] for s in batch if s["idx"] is not None]
+            if idxs:
+                persist(node)                             # leader pehle khud durable, phir replicate
+                node.wait_commit(max(idxs), COMMIT_WAIT)
                 done(node)
             for s in batch:
-                if s["idx"] is None:
-                    s["out"] = False                      # leader nahi
+                i = s["idx"]
+                if i is None or i >= len(node.log) or node.log[i].term != term:
+                    s["out"] = False                      # leader nahi, ya entry naye leader ne hata di
+                elif node.commit_index >= i:
+                    err = node.apply_errors.pop(i, None)
+                    s["out"] = {"error": err} if err else True
                 else:
-                    err = node.apply_errors.pop(s["idx"], None)
-                    s["out"] = {"error": err} if err else node.commit_index >= s["idx"]  # True = commit hua
+                    s["out"] = {"error": "unknown", "detail": "commit abhi tak nahi hua; same rid se retry safe hai"}
         except Exception as e:
             for s in batch:
                 if s["out"] is None:
@@ -211,8 +221,10 @@ def serve(node, port):
             for s in batch:
                 s["done"] = True
 
-    def submit(cmd):
+    def submit(cmd, rid=None):
         """Group commit: jo thread lock pehle le, wo pending sabki entries ek saath chalata hai."""
+        if rid:
+            cmd = f"#{rid} {cmd}"
         slot = {"cmd": cmd, "idx": None, "out": None, "done": False}
         with plock:
             pending.append(slot)
@@ -235,7 +247,7 @@ def serve(node, port):
             if self.path == "/ping":
                 out = {"alive": node.alive}
             elif self.path == "/client":
-                out = submit(body["cmd"])
+                out = submit(body["cmd"], body.get("rid"))
             else:
                 with lock:
                     if self.path == "/vote":
@@ -246,13 +258,15 @@ def serve(node, port):
                         a[4] = [LogEntry(**e) for e in a[4]]
                         out = node.handle_append_entries(*a)
                         done(node)
+                    elif self.path in ("/query", "/get") and not node.read_barrier():
+                        out = {"error": "not_leader"}       # stale read nahi denge
                     elif self.path == "/query":
                         try:
                             out = {"result": node.sm.query(body["sql"])}
                         except Exception as e:      # SqlError ya KV mode (query nahi hai)
                             out = {"error": str(e)}
                     elif self.path == "/log":
-                        out = {"cmds": [e.command for e in node.log[1:node.commit_index + 1] if e.command != "NOOP"]}
+                        out = {"cmds": [c for c in (split_cmd(e.command)[1] for e in node.log[1:node.commit_index + 1]) if c != "NOOP"]}
                     elif self.path == "/get":
                         out = {"value": node.sm.data.get(body["key"])}
                     else:

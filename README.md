@@ -252,12 +252,21 @@ CHAOS_SEEDS=3000 python -m pytest tests/test_chaos.py    # gehra chaos run
 3. **Native engine location:** install `mkdb_server` on PATH or set `MKDB_SERVER` to an absolute path. `MKDB_DLL_DIR` is optional on Windows.
 4. `/stats`, `/optimize/*`, `/ab/*`, `/rebalance/add` and `ROUTER_PORT` are wired in the current router; earlier regression notes referred to older commits.
 
+## Correctness guarantees (tests/test_regressions.py)
+
+- Reads linearizable hain: leader ReadIndex se majority confirm karke hi jawab deta hai, follower aur purana leader `not_leader` dete hain.
+- Write majority ki speed pe commit hota hai, slow follower ka wait nahi.
+- Har write ka `rid` hota hai; retry dobara apply nahi hota. Commit pakka na ho to jawab `unknown` hai, `false` nahi.
+- Peeche reh gaya follower fast backup se catch up karta hai, 500 entries per RPC.
+- Leader apni entry fsync karke hi replicate karta hai; candidate apna vote fsync karke hi vote maangta hai.
+- Rebalance ke baad shard map router restart me bacha rehta hai.
+
 ## Known limits
 
-- Reads leader-local hain (ReadIndex ya lease nahi), partition me stale read possible.
+- Shard map router ki disk pe hai (`data/shardmap.json`), Raft se replicated nahi. Ek hi router maana gaya hai.
+- Dedup aakhri 50000 request ids tak yaad rakhta hai.
 - Snapshot ya log compaction nahi, restart pe poora log replay.
 - Membership static, naya node kisi group me nahi judta.
-- Leader apni fsync replicate ke baad karta hai (textbook order se alag).
 - Cross-shard transaction aur join nahi. Hot table = hot shard.
 - Rebalance ke dauraan writes band.
 - SQL parsing regex se, poora parser nahi.
