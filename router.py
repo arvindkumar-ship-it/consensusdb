@@ -3,6 +3,7 @@ import json
 import os
 import threading
 import time
+import uuid
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
@@ -14,6 +15,33 @@ from distributed.ring import Ring
 from optimizer.service import OptimizerService
 from workload.recorder import WorkloadRecorder
 
+SHARDMAP = os.environ.get("SHARDMAP", os.path.join("data", "shardmap.json"))
+
+
+def load_shardmap():
+    """Restart pe wahi groups wapas lao jo rebalance se jude the. Iske bina ring purana ho jaata tha."""
+    try:
+        with open(SHARDMAP, encoding="utf-8") as f:
+            m = json.load(f)
+    except (FileNotFoundError, ValueError):
+        return 0
+    for g in m.get("groups", []):
+        if g not in GROUPS and g in SPARE:
+            GROUPS[g] = SPARE[g]
+    return int(m.get("version", 0))
+
+
+def save_shardmap(version):
+    os.makedirs(os.path.dirname(SHARDMAP) or ".", exist_ok=True)
+    tmp = SHARDMAP + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump({"version": version, "groups": list(GROUPS)}, f)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, SHARDMAP)
+
+
+MAP_VERSION = load_shardmap()
 ring = Ring(list(GROUPS))
 recorder = WorkloadRecorder()
 optimizer = OptimizerService(recorder, group_of=lambda t: ring.get(t))
@@ -123,22 +151,27 @@ def _pack(group, res, wrap):
 
 
 def to_leader(group, path, body, wrap=False):
-    """Cached leader pe try; fail ho to leader dobara dhoond ke ek baar retry."""
-    port = leader_port(group)
-    if port is None:
-        return {"group": group, "error": "no leader"}
-    try:
-        return _pack(group, call(port, path, body), wrap)
-    except NET_ERRS:
-        port = leader_port(group, refresh=True)
+    """Cached leader pe try; leader badal gaya ho to dobara dhoond ke ek retry.
+    Write pe ek rid lagta hai, isliye retry se double-apply nahi hota."""
+    if path == "/client" and not body.get("rid"):
+        body = {**body, "rid": uuid.uuid4().hex}
+    last = "no leader"
+    for attempt in (0, 1):
+        port = leader_port(group, refresh=attempt == 1)
         if port is None:
-            return {"group": group, "error": "no leader"}
+            break
         try:
-            return _pack(group, call(port, path, body), wrap)
+            res = call(port, path, body)
         except NET_ERRS as e:
-            with LEADER_LOCK:
-                LEADER.pop(group, None)
-            return {"group": group, "error": f"upstream: {e}"}
+            last = f"upstream: {e}"
+            continue
+        if res is False or (isinstance(res, dict) and res.get("error") == "not_leader"):
+            last = "no leader"
+            continue
+        return _pack(group, res, wrap)
+    with LEADER_LOCK:
+        LEADER.pop(group, None)
+    return {"group": group, "error": last}
 
 
 def health():
@@ -162,9 +195,9 @@ def _lift(g, res):
     return {"group": g, "ok": res}
 
 
-def sql_write(table, sql):
+def sql_write(table, sql, rid=None):
     g = ring.get(table)
-    out = to_leader(g, "/client", {"cmd": sql}, wrap=True)
+    out = to_leader(g, "/client", {"cmd": sql, "rid": rid}, wrap=True)
     return out if "error" in out else _lift(g, out["ok"])
 
 
@@ -172,7 +205,7 @@ def timed_sql(path, b):
     """/sql ya /query: route karo, time naapo, workload log me daalo, A/B buckets me record karo."""
     g = ring.get(b["table"])
     t0 = time.perf_counter()
-    out = sql_write(b["table"], b["sql"]) if path == "/sql" else to_leader(g, "/query", {"sql": b["sql"]})
+    out = sql_write(b["table"], b["sql"], b.get("rid")) if path == "/sql" else to_leader(g, "/query", {"sql": b["sql"]})
     ms = (time.perf_counter() - t0) * 1000
     ok = "error" not in out
     buckets = experiments.assign(b["sql"])
@@ -185,7 +218,7 @@ def timed_sql(path, b):
 
 def add_group(name):
     """Naya group ring me jodo: data copy karo, phir ring badlo. Beech me writes band."""
-    global ring, rebalancing
+    global ring, rebalancing, MAP_VERSION
     if name in GROUPS or name not in SPARE:
         return {"error": f"{name} SPARE me nahi hai ya pehle se active hai"}
     rebalancing = True
@@ -206,6 +239,8 @@ def add_group(name):
         out = rebalance(logs, new, lambda g, c: call(leader_port(g), "/client", {"cmd": c}) is True)
         if "error" in out:
             raise OSError(out["error"])
+        MAP_VERSION += 1
+        save_shardmap(MAP_VERSION)                     # pehle disk, phir naya ring chalu
         ring = new
         return out
     except (OSError, *NET_ERRS) as e:
@@ -396,9 +431,9 @@ class Router(BaseHTTPRequestHandler):
             if p == "/set":
                 if "value" not in b:
                     return {"error": 'body me "value" chahiye'}
-                return to_leader(g, "/client", {"cmd": f"SET {b['key']} {b['value']}"}, wrap=True)
+                return to_leader(g, "/client", {"cmd": f"SET {b['key']} {b['value']}", "rid": b.get("rid")}, wrap=True)
             if p == "/del":
-                return to_leader(g, "/client", {"cmd": f"DEL {b['key']}"}, wrap=True)
+                return to_leader(g, "/client", {"cmd": f"DEL {b['key']}", "rid": b.get("rid")}, wrap=True)
             return to_leader(g, "/get", b)
 
         return {"error": "use /set /get /del /mget (key/keys) ya /sql /query (table, sql)"}
